@@ -27,32 +27,37 @@
       display: flex;
       overflow: hidden;
       align-items: center;
+      justify-content: center;
     }
 
     #looper {
+      width: 100%;
+      height: 100%;
+      display: flex;
       text-align: center;
       vertical-align: middle;
+      flex-direction: column;
     }
 
-    .big .loop {
-      width: 200px;
-      height: 200px;
+    .row {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
     }
 
     .loop {
+      flex: 1;
+      display: flex;
       margin: 8px 10px;
-      width: 100px;
-      height: 100px;
-      display: inline-block;
+      border-radius: 5px;
       background-color: #fafafa;
       border: 1px solid #9e9e9e;
-      border-radius: 5px;
     }
 
     .del {
-      display: none;
       width: 40px;
       height: 40px;
+      display: none;
       color: #795548;
       background-color: #e57373;
       border-top-left-radius: 5px;
@@ -76,11 +81,12 @@
     }
 
     #controls {
+      justify-content: space-around;
+      align-items: center;
       position: absolute;
+      min-width: 500px;
       display: flex;
       bottom: 10px;
-      right: 50%;
-      left: 50%;
     }
 
     label {
@@ -97,6 +103,8 @@
   </div>
 
   <div id="controls">
+    <button id="add_row">Add row</button>
+    <button id="remove_row">Remove row</button>
 
     <label>
 
@@ -106,15 +114,8 @@
         checked>
       Autoplay
     </label>
-
-    <label>
-
-      <input type="checkbox"
-        name="big"
-        id="big"
-        checked>
-      big
-    </label>
+    <button id="add_column">Add column</button>
+    <button id="remove_column">Remove column</button>
   </div>
 
   <script>
@@ -337,30 +338,23 @@
     const width = Math.min(window.innerWidth, documentElement.clientWidth);
     const height = Math.min(window.innerHeight, documentElement.clientHeight);
 
-    const rows = Math.floor(height / boxH);
-    const cols = Math.floor(width / boxW);
-    const nChannels = rows * cols;
+    let rows = Math.floor(height / boxH);
+    let cols = Math.floor(width / boxW);
 
-    const bigInput = document.getElementById('big');
     const looper = document.getElementById('looper');
     const autoplayInput = document.getElementById('autoplay');
-
-    let big = true;
-    bigInput.onchange = e => {
-      looper.classList.toggle('big');
-    };
 
     let autoplay = true;
     autoplayInput.onchange = e => {
       autoplay = e.target.checked;
     };
 
-    const channels = Array.apply(null, new Array(nChannels)).map(function(
-      undef,
-      i,
-    ) {
+    let i = 0;
+    const channels = [];
+    let createChannel = function(col, parent) {
       const div = document.createElement('div');
       div.className = 'loop';
+      div.dataset.col = col;
       div.dataset.i = i;
 
       const del = document.createElement('div');
@@ -368,12 +362,71 @@
       del.dataset.i = i;
       div.appendChild(del);
 
-      looper.appendChild(div);
-
-      return {
+      parent.appendChild(div);
+      const channel = {
         div,
       };
+      channels[i] = channel;
+      i++;
+      return channel;
+    };
+
+    let createRow = function(row) {
+      const parent = document.createElement('div');
+      parent.className = 'row';
+      parent.dataset.row = row;
+      const children = Array.apply(null, new Array(cols)).map(function(
+        undef,
+        col,
+      ) {
+        return createChannel(col, parent);
+      });
+
+      looper.appendChild(parent);
+
+      return {
+        parent,
+        children,
+      };
+    };
+
+    const board = Array.apply(null, new Array(rows)).map(function(undef, row) {
+      return createRow(row);
     });
+
+    let removeChannel = function(channel, parent) {
+      const { div, source } = channel;
+      parent.removeChild(div);
+      if (source) {
+        source.stop();
+      }
+    };
+
+    document.getElementById('add_row').onclick = function() {
+      const row = board.length;
+      board[row] = createRow(row);
+    };
+    document.getElementById('remove_row').onclick = function() {
+      const { parent, children } = board.pop();
+      children.forEach(channel => {
+        removeChannel(channel, parent);
+      });
+      looper.removeChild(parent);
+    };
+    document.getElementById('add_column').onclick = function() {
+      board.forEach(row => {
+        row.children.push(createChannel(cols, row.parent));
+      });
+      cols++;
+    };
+    document.getElementById('remove_column').onclick = function() {
+      board.forEach(row => {
+        const { parent, children } = row;
+        const channel = children.pop();
+        removeChannel(channel, parent);
+      });
+      cols--;
+    };
 
     let currentChannel;
     let recording = false;
