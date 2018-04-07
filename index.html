@@ -1,0 +1,460 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en">
+
+
+<head>
+  <meta charset="UTF-8">
+
+  <title>Looper</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      overflow: hidden;
+      align-items: center;
+    }
+
+    #looper {
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .big .loop {
+      width: 200px;
+      height: 200px;
+    }
+
+    .loop {
+      margin: 8px 10px;
+      width: 100px;
+      height: 100px;
+      display: inline-block;
+      background-color: #fafafa;
+      border: 1px solid #9e9e9e;
+      border-radius: 5px;
+    }
+
+    .del {
+      display: none;
+      width: 40px;
+      height: 40px;
+      color: #795548;
+      background-color: #e57373;
+      border-top-left-radius: 5px;
+      border-bottom-right-radius: 25px;
+    }
+
+    .recording {
+      background-color: #9c27b0;
+    }
+
+    .source {
+      background-color: #03a9f4;
+    }
+
+    .source .del {
+      display: table;
+    }
+
+    .playing {
+      background-color: #4caf50;
+    }
+
+    #controls {
+      position: absolute;
+      display: flex;
+      bottom: 10px;
+      right: 50%;
+      left: 50%;
+    }
+
+    label {
+      display: flex;
+      font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div id="looper"
+    class="big">
+  </div>
+
+  <div id="controls">
+
+    <label>
+
+      <input type="checkbox"
+        name="autoplay"
+        id="autoplay"
+        checked>
+      Autoplay
+    </label>
+
+    <label>
+
+      <input type="checkbox"
+        name="big"
+        id="big"
+        checked>
+      big
+    </label>
+  </div>
+
+  <script>
+    let audioContext;
+    try {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (e) {
+      alert('No web audio support!');
+      throw e;
+    }
+
+    const WORKER_ENABLED = !!(window.URL && window.Blob && window.Worker);
+
+    function InlineWorker(func, self) {
+      let functionBody;
+
+      self = self || {};
+
+      if (WORKER_ENABLED) {
+        functionBody = func
+          .toString()
+          .trim()
+          .match(/^function\s*\w*\s*\([\w\s,]*\)\s*{([\w\W]*?)}$/)[1];
+
+        return new window.Worker(
+          window.URL.createObjectURL(
+            new window.Blob([functionBody], { type: 'text/javascript' }),
+          ),
+        );
+      }
+
+      function postMessage(data) {
+        setTimeout(() => this.onmessage({ data }), 0);
+      }
+
+      this.self = self;
+      this.self.postMessage = postMessage;
+
+      setTimeout(func.bind(self, self), 0);
+    }
+
+    InlineWorker.prototype.postMessage = function postMessage(data) {
+      setTimeout(() => this.self.onmessage({ data }), 0);
+    };
+
+    class Recorder {
+      constructor(source, cfg) {
+        Object.assign(this, {
+          recording: false,
+          callbacks: {
+            getBuffer: [],
+          },
+          config: Object.assign(
+            {
+              bufferLen: 4096,
+              numChannels: 2,
+            },
+            cfg,
+          ),
+          context: source.context,
+        });
+        const { context, config } = this;
+        const { numChannels, bufferLen } = config;
+        const node = (context.createScriptProcessor ||
+          context.createJavaScriptNode
+        ).call(context, bufferLen, numChannels, numChannels);
+
+        node.onaudioprocess = e => {
+          if (!this.recording) return;
+
+          const buffer = [];
+          for (let channel = 0; channel < numChannels; channel++) {
+            buffer.push(e.inputBuffer.getChannelData(channel));
+          }
+
+          worker.postMessage({
+            command: 'record',
+            buffer,
+          });
+        };
+
+        source.connect(node);
+        node.connect(context.destination); //this should not be necessary
+
+        let self = {};
+        const worker = (this.worker = new InlineWorker(function() {
+          let recLength = 0,
+            recBuffers = [],
+            sampleRate,
+            numChannels;
+
+          this.onmessage = function(e) {
+            switch (e.data.command) {
+              case 'init':
+                init(e.data.config);
+                break;
+              case 'record':
+                record(e.data.buffer);
+                break;
+              case 'getBuffer':
+                getBuffer();
+                break;
+              case 'clear':
+                clear();
+                break;
+            }
+          };
+
+          function init(config) {
+            sampleRate = config.sampleRate;
+            numChannels = config.numChannels;
+            initBuffers();
+          }
+
+          function record(inputBuffer) {
+            for (let channel = 0; channel < numChannels; channel++) {
+              recBuffers[channel].push(inputBuffer[channel]);
+            }
+            recLength += inputBuffer[0].length;
+          }
+
+          function getBuffer() {
+            let data = [];
+            for (let channel = 0; channel < numChannels; channel++) {
+              data.push(mergeBuffers(recBuffers[channel], recLength));
+            }
+            this.postMessage({ command: 'getBuffer', data });
+          }
+
+          function clear() {
+            recLength = 0;
+            recBuffers = [];
+            initBuffers();
+          }
+
+          function initBuffers() {
+            for (let channel = 0; channel < numChannels; channel++) {
+              recBuffers[channel] = [];
+            }
+          }
+
+          function mergeBuffers(recBuffers, recLength) {
+            let result = new Float32Array(recLength);
+            let offset = 0;
+            for (let i = 0; i < recBuffers.length; i++) {
+              result.set(recBuffers[i], offset);
+              offset += recBuffers[i].length;
+            }
+            return result;
+          }
+        }, self));
+
+        worker.postMessage({
+          command: 'init',
+          config: {
+            sampleRate: context.sampleRate,
+            numChannels,
+          },
+        });
+
+        worker.onmessage = e => {
+          let cb = this.callbacks[e.data.command].pop();
+          if (typeof cb === 'function') {
+            cb(e.data.data);
+          }
+        };
+      }
+
+      record() {
+        this.recording = true;
+      }
+
+      stop() {
+        this.recording = false;
+      }
+
+      clear() {
+        this.worker.postMessage({ command: 'clear' });
+      }
+
+      getBuffer(cb) {
+        cb = cb || this.config.callback;
+        if (!cb) throw new Error('Callback not set');
+
+        this.callbacks.getBuffer.push(cb);
+
+        this.worker.postMessage({ command: 'getBuffer' });
+      }
+    }
+
+    let recorder;
+    function startUserMedia(stream) {
+      const input = audioContext.createMediaStreamSource(stream);
+      recorder = new Recorder(input);
+    }
+
+    navigator.getUserMedia =
+      navigator.getUserMedia ||
+      navigator.webkitGetUserMedia ||
+      navigator.mozGetUserMedia ||
+      navigator.msGetUserMedia;
+
+    navigator.getUserMedia(
+      {
+        audio: true,
+      },
+      startUserMedia,
+      function(e) {
+        console.log('No live audio input', e);
+      },
+    );
+
+    const size = 200;
+    const marginV = 8;
+    const marginH = 10;
+    const boxW = size + 2 * marginH;
+    const boxH = size + 2 * marginV;
+
+    const { documentElement } = document;
+    const width = Math.min(window.innerWidth, documentElement.clientWidth);
+    const height = Math.min(window.innerHeight, documentElement.clientHeight);
+
+    const rows = Math.floor(height / boxH);
+    const cols = Math.floor(width / boxW);
+    const nChannels = rows * cols;
+
+    const bigInput = document.getElementById('big');
+    const looper = document.getElementById('looper');
+    const autoplayInput = document.getElementById('autoplay');
+
+    let big = true;
+    bigInput.onchange = e => {
+      looper.classList.toggle('big');
+    };
+
+    let autoplay = true;
+    autoplayInput.onchange = e => {
+      autoplay = e.target.checked;
+    };
+
+    const channels = Array.apply(null, new Array(nChannels)).map(function(
+      undef,
+      i,
+    ) {
+      const div = document.createElement('div');
+      div.className = 'loop';
+      div.dataset.i = i;
+
+      const del = document.createElement('div');
+      del.className = 'del';
+      del.dataset.i = i;
+      div.appendChild(del);
+
+      looper.appendChild(div);
+
+      return {
+        div,
+      };
+    });
+
+    let currentChannel;
+    let recording = false;
+    function finishRecording() {
+      recorder.stop();
+      const channel = currentChannel;
+      recorder.getBuffer(function getBufferCallback(buffers) {
+        const source = audioContext.createBufferSource();
+        const buffer = audioContext.createBuffer(
+          2,
+          buffers[0].length,
+          audioContext.sampleRate,
+        );
+
+        buffer.getChannelData(0).set(buffers[0]);
+        buffer.getChannelData(1).set(buffers[1]);
+
+        source.loop = true;
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+
+        channel.source = source;
+        channel.buffer = buffer;
+        channel.recording = false;
+
+        const { classList } = channel.div;
+        classList.remove('recording');
+        classList.add('source');
+
+        if (autoplay) {
+          classList.add('playing');
+          source.start(0);
+        }
+      });
+      recorder.clear();
+    }
+
+    function record(channel) {
+      if (recording) {
+        recording = false;
+        finishRecording();
+      }
+      if (channel !== currentChannel || !channel.recording) {
+        channel.div.classList.add('recording');
+        currentChannel = channel;
+        channel.recording = true;
+        recorder.record();
+        recording = true;
+      }
+    }
+
+    looper.onclick = function(event) {
+      const { target } = event;
+      const { dataset, className, classList } = target;
+      const channel = channels[dataset.i];
+      const { source } = channel;
+      if (source) {
+        if (className === 'del') {
+          const { classList } = target.parentElement;
+          classList.remove('playing');
+          classList.remove('source');
+          channel.source = null;
+          channel.buffer = null;
+          source.stop();
+        } else if (classList.contains('playing')) {
+          classList.remove('playing');
+          source.stop();
+        } else {
+          const source = audioContext.createBufferSource();
+          channel.source = source;
+          source.buffer = channel.buffer;
+          source.loop = true;
+          source.connect(audioContext.destination);
+          source.start(0);
+          classList.add('playing');
+        }
+      } else {
+        record(channel);
+      }
+    };
+
+  </script>
+</body>
+</html>
